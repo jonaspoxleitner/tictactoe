@@ -1,0 +1,11 @@
+include: package:lints/recommended.yaml
+
+linter:
+  rules:
+    - always_use_package_imports
+    - directives_ordering
+    - prefer_expression_function_bodies
+    - unawaited_futures
+
+formatter:
+  page_width: 120
