@@ -4,17 +4,32 @@ import 'dart:math';
 
 import 'package:tictactoe/src/ai.dart';
 import 'package:tictactoe/src/game.dart';
+import 'package:tictactoe/src/ollama.dart';
 
-/// Interactive command-line tic-tac-toe against a random-move AI.
+/// Interactive command-line tic-tac-toe against an Ollama decision model.
 ///
 /// Every prompt lists its valid inputs and accepts a single keypress —
 /// no Enter needed. `Q` at any prompt, Ctrl+C, or EOF ends the app.
 class TicTacToeCli {
+  /// The environment variable that names the decision model to play against.
+  static const String decisionModelVariable = 'DECISION_MODEL';
+
+  /// The environment variable that enables debug output (model probabilities)
+  /// when set to `true`, `1`, `yes`, or `on` (case-insensitive).
+  static const String decisionDebugVariable = 'DECISION_DEBUG';
+
   final Random _random = Random();
+  bool _debug = false;
   StreamSubscription<ProcessSignal>? _interruptSubscription;
 
   /// Plays games until the user quits.
-  void run() {
+  ///
+  /// Reads the model from [decisionModelVariable] and exits with code `2`,
+  /// after an error on stderr, when it is unset or empty.
+  Future<void> run() async {
+    final model = _decisionModel();
+    _debug = _debugEnabled();
+    final client = OllamaClient(model: model);
     final interactive = stdin.hasTerminal;
     if (interactive) {
       stdin.echoMode = false;
@@ -25,13 +40,13 @@ class TicTacToeCli {
       });
     }
     try {
-      stdout.writeln('Tic-tac-toe vs. a random AI. X goes first.');
+      stdout.writeln('Tic-tac-toe vs. the $model decision model. X goes first.');
       while (true) {
         final human = _askSymbol();
         if (human == null) {
           break;
         }
-        if (!_playGame(human)) {
+        if (!await _playGame(human, client)) {
           break;
         }
         if (!_askRestart()) {
@@ -46,6 +61,28 @@ class TicTacToeCli {
       }
     }
   }
+
+  /// The model named by [decisionModelVariable].
+  ///
+  /// Reports to stderr and exits with code `2` when the variable is unset or
+  /// empty, before any prompt is shown.
+  String _decisionModel() {
+    final model = Platform.environment[decisionModelVariable]?.trim();
+    if (model == null || model.isEmpty) {
+      stderr.writeln(
+        'Error: $decisionModelVariable is not set. '
+        'Add $decisionModelVariable=<model> to .env, or export it before running.',
+      );
+      exit(2);
+    }
+    return model;
+  }
+
+  /// Whether [decisionDebugVariable] enables debug output.
+  bool _debugEnabled() => switch (Platform.environment[decisionDebugVariable]?.trim().toLowerCase()) {
+    'true' || '1' || 'yes' || 'on' => true,
+    _ => false,
+  };
 
   /// Asks which symbol the human plays; returns `null` when the user quits.
   Cell? _askSymbol() {
@@ -66,10 +103,12 @@ class TicTacToeCli {
     }
   }
 
-  /// Plays one game with [human] as the human symbol.
+  /// Plays one game with [human] as the human symbol, asking [client] for every
+  /// AI move.
   ///
-  /// Returns `false` when the user quits before the game ends.
-  bool _playGame(Cell human) {
+  /// Returns `false` when the user quits before the game ends. A model failure
+  /// prints [MoveResult.warning] and the turn falls back to a random move.
+  Future<bool> _playGame(Cell human, DecisionClient client) async {
     final ai = _opponent(human);
     var board = Board();
     var turn = Cell.x;
@@ -82,7 +121,15 @@ class TicTacToeCli {
         }
         board = board.applyMove(move, human);
       } else {
-        board = board.applyMove(randomMove(board, _random), ai);
+        final result = await modelMove(board, ai, client, _random);
+        final warning = result.warning;
+        if (warning != null) {
+          stdout.writeln('Warning: $warning.');
+        }
+        if (_debug) {
+          _reportProbabilities(result.probabilities);
+        }
+        board = board.applyMove(result.cell, ai);
       }
 
       final winner = board.winner();
@@ -154,6 +201,16 @@ class TicTacToeCli {
     Cell.o => 'O',
     Cell.empty => '${index + 1}',
   };
+
+  /// In debug mode, prints the model's [probabilities], most likely first.
+  void _reportProbabilities(Map<String, double>? probabilities) {
+    if (probabilities == null) {
+      return;
+    }
+    final ranked = probabilities.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
+    final listing = ranked.map((entry) => '${entry.key}: ${(entry.value * 100).toStringAsFixed(1)}%').join(', ');
+    stdout.writeln('Model probabilities: $listing');
+  }
 
   Cell _opponent(Cell symbol) => symbol == Cell.x ? Cell.o : Cell.x;
 

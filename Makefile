@@ -1,3 +1,6 @@
+include .env
+export DECISION_MODEL DECISION_DEBUG
+
 .PHONY: format run test
 
 format:

@@ -1,6 +1,7 @@
 import 'dart:math';
 
 import 'package:test/test.dart';
+import 'package:tictactoe/src/ollama.dart';
 import 'package:tictactoe/tictactoe.dart';
 
 /// A full board with no winner, in cell order `0`-`8`.
@@ -21,6 +22,41 @@ const winLines = [
   [0, 4, 8],
   [2, 4, 6],
 ];
+
+/// A [DecisionClient] that answers with a canned choice, or throws an
+/// [OllamaException] carrying a canned failure.
+class FakeDecisionClient implements DecisionClient {
+  FakeDecisionClient.choosing(String this.choice, {this.probabilities}) : failure = null;
+
+  FakeDecisionClient.failing(String this.failure) : choice = null, probabilities = null;
+
+  final String? choice;
+  final String? failure;
+
+  /// The probabilities [choose] reports alongside [choice].
+  final Map<String, double>? probabilities;
+
+  /// The arguments of the last [choose] call.
+  Map<String, String>? state;
+  String? instructions;
+  Map<String, String>? criteria;
+
+  @override
+  Future<DecisionChoice> choose({
+    required Map<String, String> state,
+    required String instructions,
+    required Map<String, String> criteria,
+  }) async {
+    this.state = state;
+    this.instructions = instructions;
+    this.criteria = criteria;
+    final failure = this.failure;
+    if (failure != null) {
+      throw OllamaException(failure);
+    }
+    return DecisionChoice(choice!, probabilities: probabilities);
+  }
+}
 
 /// Builds a board from [cells], skipping [Cell.empty] entries.
 Board boardFrom(List<Cell> cells) {
@@ -178,6 +214,142 @@ void main() {
 
       expect(board.isFull, isTrue);
       expect(() => randomMove(board, Random(0)), throwsStateError);
+    });
+  });
+
+  group('boardState', () {
+    test('labels every cell with its 1-based number', () {
+      final board = boardFrom([
+        Cell.x, Cell.empty, Cell.o, //
+        Cell.empty, Cell.empty, Cell.empty, //
+        Cell.empty, Cell.empty, Cell.empty, //
+      ]);
+
+      expect(boardState(board), {
+        '1': 'X',
+        '2': 'empty',
+        '3': 'O',
+        '4': 'empty',
+        '5': 'empty',
+        '6': 'empty',
+        '7': 'empty',
+        '8': 'empty',
+        '9': 'empty',
+      });
+    });
+  });
+
+  group('moveCriteria', () {
+    test('offers only empty cells, each with its position hint', () {
+      final board = boardFrom([
+        Cell.x, Cell.empty, Cell.o, //
+        Cell.empty, Cell.empty, Cell.empty, //
+        Cell.empty, Cell.empty, Cell.empty, //
+      ]);
+
+      expect(moveCriteria(board), {
+        '2': 'top-center cell',
+        '4': 'middle-left cell',
+        '5': 'center cell',
+        '6': 'middle-right cell',
+        '7': 'bottom-left cell',
+        '8': 'bottom-center cell',
+        '9': 'bottom-right cell',
+      });
+    });
+  });
+
+  group('modelMove', () {
+    /// X to move with a win open on cell `3` (top-right).
+    final winningBoard = boardFrom([
+      Cell.x, Cell.x, Cell.empty, //
+      Cell.o, Cell.o, Cell.empty, //
+      Cell.empty, Cell.empty, Cell.empty, //
+    ]);
+
+    test('returns the only empty cell without asking the model', () async {
+      final board = boardFrom([
+        Cell.x, Cell.o, Cell.x, //
+        Cell.x, Cell.o, Cell.o, //
+        Cell.o, Cell.x, Cell.empty, //
+      ]);
+      final client = FakeDecisionClient.choosing('9');
+
+      final result = await modelMove(board, Cell.x, client, Random(0));
+
+      expect(result.cell, 8);
+      expect(result.warning, isNull);
+      expect(client.state, isNull); // the model was not consulted
+    });
+
+    test('plays the cell the model picks', () async {
+      final client = FakeDecisionClient.choosing('3');
+
+      final result = await modelMove(winningBoard, Cell.x, client, Random(0));
+
+      expect(result.cell, 2);
+      expect(result.warning, isNull);
+      expect(client.state, boardState(winningBoard));
+      expect(client.criteria, moveCriteria(winningBoard));
+      expect(client.instructions, contains('X'));
+      expect(client.instructions, contains('empty cell'));
+    });
+
+    test('carries the model probabilities into the result', () async {
+      const probabilities = {'2': 0.05, '3': 0.9, '6': 0.05};
+      final client = FakeDecisionClient.choosing('3', probabilities: probabilities);
+
+      final result = await modelMove(winningBoard, Cell.x, client, Random(0));
+
+      expect(result.cell, 2);
+      expect(result.probabilities, probabilities);
+    });
+
+    test('asks about the symbol whose turn it is', () async {
+      final client = FakeDecisionClient.choosing('3');
+
+      await modelMove(winningBoard, Cell.o, client, Random(0));
+
+      expect(client.instructions, contains('O'));
+      expect(client.instructions, isNot(contains('X')));
+    });
+
+    test('warns and plays a random move when the client throws an OllamaException', () async {
+      final client = FakeDecisionClient.failing('Could not reach Ollama');
+
+      for (var seed = 0; seed < 20; seed++) {
+        final result = await modelMove(winningBoard, Cell.x, client, Random(seed));
+
+        expect(result.warning, contains('Could not reach Ollama'));
+        expect(winningBoard[result.cell], Cell.empty);
+      }
+    });
+
+    test('warns and plays a random move when the model picks an occupied cell', () async {
+      final client = FakeDecisionClient.choosing('1');
+
+      final result = await modelMove(winningBoard, Cell.x, client, Random(0));
+
+      expect(result.warning, contains('cell 1'));
+      expect(result.warning, contains('X'));
+      expect(winningBoard[result.cell], Cell.empty);
+    });
+
+    for (final label in ['0', '10', 'top-left']) {
+      test('warns and plays a random move when the model picks "$label"', () async {
+        final client = FakeDecisionClient.choosing(label);
+
+        final result = await modelMove(winningBoard, Cell.x, client, Random(0));
+
+        expect(result.warning, contains('"$label"'));
+        expect(winningBoard[result.cell], Cell.empty);
+      });
+    }
+
+    test('throws a StateError on a full board', () async {
+      final board = boardFrom(drawCells);
+
+      expect(modelMove(board, Cell.x, FakeDecisionClient.choosing('1'), Random(0)), throwsStateError);
     });
   });
 }

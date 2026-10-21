@@ -1,5 +1,5 @@
 import 'package:tictactoe/src/cli.dart';
 
-void main(List<String> arguments) {
-  TicTacToeCli().run();
+Future<void> main(List<String> arguments) async {
+  await TicTacToeCli().run();
 }

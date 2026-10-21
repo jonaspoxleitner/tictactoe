@@ -1,5 +1,5 @@
 name: tictactoe
-description: A command-line tic-tac-toe game played against a random-move AI.
+description: A command-line tic-tac-toe game played against an Ollama decision-model AI.
 version: 1.0.0
 # repository: https://github.com/my_org/my_repo
 
