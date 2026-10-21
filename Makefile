@@ -1,4 +1,4 @@
-.PHONY: format
+.PHONY: format run test
 
 format:
 	find bin lib -name "*.dart" \
@@ -7,3 +7,9 @@ format:
 		! -path "lib/l10n/*" \
 		! -path "lib/util/assets/*" \
 		| xargs fvm dart format
+
+run:
+	fvm dart run
+
+test:
+	fvm dart test

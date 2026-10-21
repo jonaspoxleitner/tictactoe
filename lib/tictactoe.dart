@@ -1,1 +1,2 @@
-int calculate() => 6 * 7;
+export 'src/ai.dart';
+export 'src/game.dart';

@@ -1,5 +1,5 @@
-import 'package:tictactoe/tictactoe.dart' as tictactoe;
+import 'package:tictactoe/src/cli.dart';
 
 void main(List<String> arguments) {
-  print('Hello world: ${tictactoe.calculate()}!');
+  TicTacToeCli().run();
 }
